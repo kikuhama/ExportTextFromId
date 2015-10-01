@@ -1,6 +1,10 @@
 /*
   InDesignデータから，テキスト構造をXMLとして書き出す
-  Version 1.0.0
+  Version 1.0.1
+
+  Changes
+  1.0.0: initial version
+  1.0.1: ルビをサポート (2015/10/1)
 */
 #target indesign
 
@@ -118,6 +122,14 @@ TextContents.prototype.addAnchorText = function(at) {
     });
 }
 
+TextContents.prototype.addRuby = function(text, ruby) {
+    this.contents.push({
+	type: "RUBY",
+	text: text,
+	ruby: ruby
+    });
+}
+
 TextContents.prototype.addGraphic = function(g) {
     var link = g.itemLink;
     this.contents.push({
@@ -194,6 +206,7 @@ Analyzer.prototype.analyzeParagraph = function(paragraph) {
 		text.paraStyle = paragraph.appliedParagraphStyle.name;
 		var s = "";
 		var chStyle = null;
+		var ruby = null;
 		for(var charIndex=0; charIndex<paragraph.characters.length; charIndex++) {
 		    var ch = paragraph.characters[charIndex];
 		    if(ch.appliedCharacterStyle.isValid
@@ -218,6 +231,26 @@ Analyzer.prototype.analyzeParagraph = function(paragraph) {
 		    }
 		    else {
 			var ch_s = ch.contents.toString();
+			// ルビ
+			if(!ruby && ch.rubyFlag) {
+			    // ruby started
+			    text.addText(s);
+			    s = "";
+			    ruby = ch.rubyString;
+			}
+			else if(ruby && !ch.rubyFlag) {
+			    // ruby finished
+			    text.addRuby(s, ruby);
+			    s = "";
+			    ruby = null;
+			}
+			else if(ruby && ch.rubyFlag && ruby != ch.rubyString) {
+			    // ruby restarted
+			    text.addRuby(s, ruby);
+			    s = "";
+			    ruby = ch.rubyString;
+			}
+			
 			if(ch_s.length > 1) {
 			    // special character
 			    switch(ch_s) {
@@ -309,6 +342,14 @@ Analyzer.prototype.makeParagraphEle = function(para) {
 		// 文字スタイル解除
 		contentEle = paraEle;
 	    }
+	    break;
+	case "RUBY":
+	    var rubyEle = new XML("<ruby/>");
+	    rubyEle.appendChild(content.text);
+	    var rtEle = new XML("<rt/>");
+	    rtEle.appendChild(content.ruby);
+	    rubyEle.appendChild(rtEle);
+	    contentEle.appendChild(rubyEle);
 	    break;
 	}
     }
