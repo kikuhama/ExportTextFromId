@@ -8,6 +8,8 @@
 */
 #target indesign
 
+app.scriptPreferences.userInteractionLevel = UserInteractionLevels.NEVER_INTERACT;
+
 var CHARSTYLE_NONE = "[なし]";
 
 function dumpObj(obj) {
