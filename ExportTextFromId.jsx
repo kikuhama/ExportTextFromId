@@ -1,10 +1,11 @@
 /*
   InDesignデータから，テキスト構造をXMLとして書き出す
-  Version 1.0.1
+  Version 1.0.2
 
   Changes
   1.0.0: initial version
   1.0.1: ルビをサポート (2015/10/1)
+  1.0.2: 複数ファイルをいっぺんに処理したとき，XMLを一つにまとめるよう変更
 */
 #target indesign
 
@@ -359,7 +360,7 @@ Analyzer.prototype.makeParagraphEle = function(para) {
     return paraEle;
 }
 
-Analyzer.prototype.exportXML = function(xmlFileName) {
+Analyzer.prototype.xml = function() {
     this.stories.sort(function(a, b) {
 	if(a.page != b.page) {
 	    var pa = Number(a.page);
@@ -388,7 +389,6 @@ Analyzer.prototype.exportXML = function(xmlFileName) {
 	    return a.top - b.top;
 	}
     });
-    XML.prettyPrinting = false;
     var xmldoc = new XML("<pages/>");
     var currentPage = null;
     var pageEle;
@@ -408,23 +408,11 @@ Analyzer.prototype.exportXML = function(xmlFileName) {
 	}
 	pageEle.appendChild(storyEle);
     }
-    
-    var file;
-    if(xmlFileName) {
-	file = new File(xmlFileName);
-    }
-    else {
-	file = this.getSaveFile();
-    }
-    if(file && file.open("w")) {
-	file.encoding = "utf-8";
-	file.write("<?xml version='1.0' encoding='utf-8'?>");
-	file.write(xmldoc.toXMLString());
-	file.close();
-    }
+
+    return xmldoc;
 }
 
-Analyzer.prototype.getSaveFile = function() {
+var getSaveFile = function() {
     var file = new File("export_text.xml");
     file = file.saveDlg("エクスポートファイル名を指定してください。",
 			"*.xml",
@@ -435,10 +423,16 @@ Analyzer.prototype.getSaveFile = function() {
 
 
 var analyzer = new Analyzer();
+XML.prettyPrinting = true;
+var xmldoc = new XML("<files/>");
+var canceled = false;
 
 if(app.documents.length > 0) {
     analyzer.analyzeDoc(app.activeDocument);
-    analyzer.exportXML();
+    var fileEle = new XML("<file/>");
+    fileEle.@name = app.activeDocument.name;
+    fileEle.appendChild(analyzer.xml());
+    xmldoc.appendChild(fileEle);
 }
 else {
     var folderName = Folder.selectDialog("フォルダを選択してください。");
@@ -446,12 +440,27 @@ else {
 	var folder = new Folder(folderName);
 	var idFiles = selectIdFiles(folder);
 	for(var i=0; i<idFiles.length; ++i) {
-	    var xmlFileName = idFiles[i].fullName.replace(/\.indd$/, ".xml");
 	    var doc = app.open(idFiles[i]);
 	    analyzer.analyzeDoc(doc);
 	    doc.close(SaveOptions.NO);
-	    analyzer.exportXML(xmlFileName);
+	    var fileEle = new XML("<file/>");
+	    fileEle.@name = idFiles[i];
+	    fileEle.appendChild(analyzer.xml());
+	    xmldoc.appendChild(fileEle);
 	}
+    }
+    else {
+	canceled = true;
+    }
+}
+
+if(!canceled) {
+    var file = getSaveFile();
+    if(file && file.open("w")) {
+	file.encoding = "utf-8";
+	file.write("<?xml version='1.0' encoding='utf-8'?>");
+	file.write(xmldoc.toXMLString());
+	file.close();
     }
 }
 
