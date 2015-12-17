@@ -6,6 +6,7 @@
   1.0.0: initial version
   1.0.1: ルビをサポート (2015/10/1)
   1.0.2: 複数ファイルをいっぺんに処理したとき，XMLを一つにまとめるよう変更
+  1.0.3: paragraph.parentTextFrames[0]がTextPathだったときの処理を追加
 */
 #target indesign
 
@@ -199,6 +200,9 @@ Analyzer.prototype.analyzeParagraph = function(paragraph) {
     if(paragraph.isValid) {
 	var text = new TextContents();
 	var textFrame = paragraph.parentTextFrames[0];
+	while(textFrame instanceof TextPath) {
+	    textFrame = textFrame.parent;
+	}
 	if(textFrame && textFrame.isValid
 	   && textFrame.parentPage && textFrame.parentPage.isValid) {
 	    var parent = textFrame.parent;
