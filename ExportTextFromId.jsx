@@ -1,12 +1,13 @@
 /*
   InDesignデータから，テキスト構造をXMLとして書き出す
-  Version 1.0.2
+  Version 1.1.0
 
   Changes
   1.0.0: initial version
   1.0.1: ルビをサポート (2015/10/1)
   1.0.2: 複数ファイルをいっぺんに処理したとき，XMLを一つにまとめるよう変更
   1.0.3: paragraph.parentTextFrames[0]がTextPathだったときの処理を追加
+  1.1.0: 大幅に書き直し。階層的にオブジェクトを取り出せるよう修正。特色を使っているスタイルは，特色情報も取り出せるように変更。
 */
 #target indesign
 
@@ -52,11 +53,12 @@ function selectIdFiles(folder) {
 	if(f instanceof Folder) {
 	    idFiles = idFiles.concat(selectIdFiles(f));
 	}
-	else if(f.name.match(/\.indd$/)) {
+	else if(f.name.match(/\.indd$/) && f.name.charAt(0) != ".") {
+	    // ファイル名の先頭が「.」ではじまるファイルは除外
 	    idFiles.push(f);
 	}
     }
-    return idFiles;
+    return idFiles.sort();
 }
 
 function PdfVisibleLayers(pdf) {
@@ -71,120 +73,35 @@ function PdfVisibleLayers(pdf) {
     return visibleLayers;
 }
 
-function TextContents() {
-    this.page = 0;
-    this.top = 0;
-    this.left = 0;
-    this.paraStyle = "";
-    this.contents = [];
-}
-
-TextContents.prototype.setPage = function(page) {
-    page_i = parseInt(page);
-    if(isNaN(page_i)) {
-	this.page = page
-    }
-    else {
-	this.page = page_i;
-    }
-}
-
-TextContents.prototype.setTop = function(top) {
-    top = parseFloat(top);
-    if(isNaN(top)) {
-	top = 0;
-    }
-    this.top = top;
-}
-
-TextContents.prototype.setLeft = function(left) {
-    left = parseFloat(left);
-    if(isNaN(left)) {
-	left = 0;
-    }
-    this.left = left;
-}
-
-TextContents.prototype.addText = function(t) {
-    this.contents.push({
-	type: "TEXT",
-	text: t
-    });
-}
-
-TextContents.prototype.addSpecialChar = function(c) {
-    this.contents.push({
-	type: "SPECIALCHAR",
-	text: c
-    });
-}
-
-TextContents.prototype.addAnchorText = function(at) {
-    this.contents.push({
-	type: "ANCHORTEXT",
-	text: at
-    });
-}
-
-TextContents.prototype.addRuby = function(text, ruby) {
-    this.contents.push({
-	type: "RUBY",
-	text: text,
-	ruby: ruby
-    });
-}
-
-TextContents.prototype.addGraphic = function(g) {
-    var link = g.itemLink;
-    this.contents.push({
-	type: "GRAPHIC",
-	text: link.name,
-	layer: PdfVisibleLayers(g)
-    });
-}
-
-TextContents.prototype.addCharStyle = function(cs) {
-    this.contents.push({
-	type: "CHARSTYLE",
-	text: cs
-    });
-}
-
-		       
-function Analyzer() {
-}
-
-Analyzer.prototype.analyzeDoc = function(doc) {
-    this.stories = [];
-    for(var storyIndex=0; storyIndex<doc.stories.length; ++storyIndex) {
-	var story = doc.stories[storyIndex];
-	var storyData = this.analyzeStory(story)
-	if(storyData && storyData.page != 0) {
-	    this.stories.push(storyData);
-	}
-    }
-}
-
-Analyzer.prototype.analyzeStory = function(story) {
-    var storyData = {
-	paragraphs: [],
-	page: 0,
-	top: 0
-    };
+function GetStoryFirstTextFrame(story) {
     if(story && story.isValid) {
-	for(var paraIndex=0; paraIndex<story.paragraphs.length; ++paraIndex) {
-	    var text = this.analyzeParagraph(story.paragraphs[paraIndex]);
-	    if(text) {
-		storyData.paragraphs.push(text);
+	var para = story.paragraphs[0];
+	if(para && para.isValid) {
+	    var tf = para.parentTextFrames[0];
+	    while(tf instanceof TextPath) {
+		tf = tf.parent;
 	    }
+	    return tf;
 	}
-	if(storyData.paragraphs.length > 0) {
-	    storyData.page = storyData.paragraphs[0].page;
-	    storyData.top = storyData.paragraphs[0].top;
-	}
-	return storyData;
     }
     return null;
+}
+
+function GetStoryInfo(story) {
+    var tf = GetStoryFirstTextFrame(story);
+    var info;
+    if(tf && tf.isValid && tf.parentPage) {
+	info = {
+	    story: story,
+	    page: tf.parentPage.name,
+	    top: tf.visibleBounds[0],
+	    left: tf.visibleBounds[1]
+	}
+    }
+    return info;
+}
+
+function Analyzer() {
 }
 
 Analyzer.prototype.getChild = function(item) {
@@ -196,224 +113,375 @@ Analyzer.prototype.getChild = function(item) {
     }
 }
 
-Analyzer.prototype.analyzeParagraph = function(paragraph) {
-    if(paragraph.isValid) {
-	var text = new TextContents();
-	var textFrame = paragraph.parentTextFrames[0];
-	while(textFrame instanceof TextPath) {
-	    textFrame = textFrame.parent;
-	}
-	if(textFrame && textFrame.isValid
-	   && textFrame.parentPage && textFrame.parentPage.isValid) {
-	    var parent = textFrame.parent;
-	    if(!(parent instanceof(Character))) {
-		text.setPage(textFrame.parentPage.name);
-		text.setTop(textFrame.visibleBounds[0]);
-		text.setLeft(textFrame.visibleBounds[1]);
-		text.paraStyle = paragraph.appliedParagraphStyle.name;
-		var s = "";
-		var chStyle = null;
-		var ruby = null;
-		for(var charIndex=0; charIndex<paragraph.characters.length; charIndex++) {
-		    var ch = paragraph.characters[charIndex];
-		    if(ch.appliedCharacterStyle.isValid
-		       && ch.appliedCharacterStyle.name != chStyle) {
-			chStyle = ch.appliedCharacterStyle.name;
-			text.addText(s);
-			s = "";
-			text.addCharStyle(chStyle);
-		    }
-		    if(ch.allPageItems.length > 0) {
-			// anchor object
-			text.addText(s);
-			s = "";
-			var anchorObject = this.getChild(ch);
-			if(anchorObject instanceof(TextFrame)) {
-			    text.addAnchorText(anchorObject.contents);
-			}
-			else if(anchorObject instanceof(Graphic)
-				|| anchorObject instanceof(PDF)) {
-			    text.addGraphic(anchorObject);
-			}
-		    }
-		    else {
-			var ch_s = ch.contents.toString();
-			// ルビ
-			if(!ruby && ch.rubyFlag) {
-			    // ruby started
-			    text.addText(s);
-			    s = "";
-			    ruby = ch.rubyString;
-			}
-			else if(ruby && !ch.rubyFlag) {
-			    // ruby finished
-			    text.addRuby(s, ruby);
-			    s = "";
-			    ruby = null;
-			}
-			else if(ruby && ch.rubyFlag && ruby != ch.rubyString) {
-			    // ruby restarted
-			    text.addRuby(s, ruby);
-			    s = "";
-			    ruby = ch.rubyString;
-			}
-			
-			if(ch_s.length > 1) {
-			    // special character
-			    switch(ch_s) {
-			    case "SINGLE_RIGHT_QUOTE":
-				s += "’";
-				break;
-			    case "SINGLE_LEFT_QUOTE":
-				s += "‘";
-				break;
-			    case "DOUBLE_RIGHT_QUOTE":
-				s += "”";
-				break;
-			    case "DOUBLE_LEFT_QUOTE":
-				s += "“";
-				break;
-			    default:
-				text.addText(s);
-				s = "";
-				text.addSpecialChar(ch_s);
-			    }
-			}
-			else {
-			    // normal character
-			    if(ch_s.match(/\t/)) {
-				text.addText(s);
-				s = "";
-				text.addSpecialChar("TAB");
-			    }
-			    else {
-				s += ch_s;
-			    }
-			}
-		    }
-		}
-		text.addText(s);
-		return text;
+Analyzer.prototype.analyzeDoc = function(doc) {
+    this.doc = doc;
+
+    var pageBinding = doc.documentPreferences.pageBinding;
+    var stories = [];
+    var docXml = new XML("<file/>");
+    docXml.@name = doc.name;
+    var pagesXml = new XML("<pages/>");
+    var pageXml;
+    var prevPage;
+    var page;
+    var story;
+    var storyInfo;
+    var storyIndex;
+
+    for(storyIndex=0; storyIndex<doc.stories.length; ++storyIndex) {
+	story = doc.stories[storyIndex];
+	if(story && story.isValid) {
+	    storyInfo = GetStoryInfo(story);
+	    if(storyInfo) {
+		stories.push(storyInfo);
 	    }
 	}
     }
-}
-
-Analyzer.prototype.xmlText = function(s) {
-    try {
-	var s2 = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
-	s2 = s2.replace(/[\u0000-\u001f]/, "");
-	return s2;
-    }
-    catch(e) {
-	return s;
-    }
-}
-
-Analyzer.prototype.makeParagraphEle = function(para) {
-    var charstyleStarted = false;
-    var paraEle = new XML("<p/>");
-    var contentEle = paraEle;
-    paraEle.@style = para.paraStyle;
-    for(var contentIndex=0; contentIndex<para.contents.length; ++contentIndex) {
-	var content = para.contents[contentIndex];
-	var childEle;
-	switch(content.type) {
-	case "TEXT":
-	    contentEle.appendChild(content.text);
-	    break;
-	case "SPECIALCHAR":
-	    childEle = new XML("<specialChar/>");
-	    childEle.@name = content.text;
-	    contentEle.appendChild(childEle);
-	    break;
-	case "ANCHORTEXT":
-	    childEle = new XML("<anchorText/>");
-	    childEle.appendChild(content.text);
-	    contentEle.appendChild(childEle);
-	    break;
-	case "GRAPHIC":
-	    childEle = new XML("<anchorGraphic/>");
-	    childEle.@name = content.text;
-	    childEle.@layer = content.layer;
-	    contentEle.appendChild(childEle);
-	    break;
-	case "CHARSTYLE":
-	    if(content.text != CHARSTYLE_NONE) {
-		contentEle = new XML("<c/>");
-		charstyleStarted = true;
-		contentEle.@style = content.text;
-		paraEle.appendChild(contentEle);
-	    }
-	    else {
-		// 文字スタイル解除
-		contentEle = paraEle;
-	    }
-	    break;
-	case "RUBY":
-	    var rubyEle = new XML("<ruby/>");
-	    rubyEle.appendChild(content.text);
-	    var rtEle = new XML("<rt/>");
-	    rtEle.appendChild(content.ruby);
-	    rubyEle.appendChild(rtEle);
-	    contentEle.appendChild(rubyEle);
-	    break;
-	}
-    }
-
-    return paraEle;
-}
-
-Analyzer.prototype.xml = function() {
-    this.stories.sort(function(a, b) {
-	if(a.page != b.page) {
-	    var pa = Number(a.page);
-	    var pb = Number(b.page);
-	    if(isNaN(pa) && isNaN(pb)) {
+    stories.sort(function(a, b) {
+	var pa = a.page;
+	var pb = b.page;
+	if(pa != pb) {
+	    var pan = Number(pa);
+	    var pbn = Number(pb);
+	    if(isNaN(pan) && isNaN(pbn)) {
 		// a.page, b.pageともに文字列
-		if(String(a.page) > String(b.page)) {
+		if(String(pa) > String(pb)) {
 		    return 1;
 		}
 		else {
 		    return -1;
 		}
 	    }
-	    else if(isNaN(pa)) {
+	    else if(isNaN(pan)) {
 		return 1;
 	    }
-	    else if(isNaN(pb)) {
+	    else if(isNaN(pbn)) {
 		return -1;
 	    }
 	    else {
 		// a.page, b.pageともに数値
-		return pa - pb;
+		return pan - pbn;
 	    }
 	}
-	else{
-	    return a.top - b.top;
+	else {
+	    var ta = a.top;
+	    var tb = b.top;
+	    var la = a.left;
+	    var lb = b.left;
+	    if(pageBinding == PageBindingOptions.RIGHT_TO_LEFT) {
+		// 右綴じ
+		if(Math.abs(ta - tb) > 10) {
+		    return ta - tb;
+		}
+		else {
+		    return lb - la;
+		}
+	    }
+	    else {
+		// 左綴じ
+		if(Math.abs(la - lb) > 10) {
+		    return la - lb;
+		}
+		else {
+		    return ta - tb;
+		}
+	    }
 	}
+	return 0;
     });
-    var xmldoc = new XML("<pages/>");
-    var currentPage = null;
-    var pageEle;
-    var storyEle;
-    for(var storyIndex=0; storyIndex<this.stories.length; ++storyIndex) {
-	var story = this.stories[storyIndex];
-	if(story.page != currentPage) {
-	    pageEle = new XML("<page/>");
-	    pageEle.@number = story.page;
-	    xmldoc.appendChild(pageEle);
-	    currentPage = story.page;
+
+    for(storyIndex=0; storyIndex<stories.length; ++storyIndex) {
+	storyInfo = stories[storyIndex];
+	story = storyInfo.story;
+	if(story && story.isValid) {
+	    page = storyInfo.page;
+	    if(!pageXml || page != prevPage) {
+		prevPage = page;
+		pageXml = new XML("<page/>");
+		pageXml.@number = page;
+		pagesXml.appendChild(pageXml);
+	    }
+	    pageXml.appendChild(this.analyzeStory(story));
 	}
-	storyEle = new XML("<story/>");
-	for(var paraIndex=0; paraIndex<story.paragraphs.length; ++paraIndex) {
-	    var para = story.paragraphs[paraIndex];
-	    storyEle.appendChild(this.makeParagraphEle(para));
+    }
+    
+    docXml.appendChild(pagesXml);
+    return docXml;
+}
+
+Analyzer.prototype.analyzeStory = function(story) {
+    var paragraph;
+    var paraIndex;
+    var textFrame;
+    var textFrameParent;
+    var storyXml = new XML("<story/>");
+
+    for(paraIndex=0; paraIndex<story.paragraphs.length; ++paraIndex) {
+	paragraph = story.paragraphs[paraIndex];
+	textFrame = paragraph.parentTextFrames[0];
+	while(textFrame instanceof TextPath) {
+	    textFrame = textFrame.parent;
 	}
-	pageEle.appendChild(storyEle);
+	if(textFrame && textFrame.isValid) {
+	    textFrameParent = textFrame.parent;
+	    if(!(textFrameParent instanceof(Character)) &&  paragraph.isValid) {
+		storyXml.appendChild(this.analyzeParagraph(paragraph));
+	    }
+	}
     }
 
-    return xmldoc;
+    if(storyXml.length() == 0) {
+	storyXml = null;
+    }
+    
+    return storyXml;
+}
+
+Analyzer.prototype.analyzeParagraph = function(paragraph) {
+    var paraXml = new XML("<p/>");
+    var contentXml = paraXml;
+    var charIndex;
+    var ch;
+    var ch_s;
+    var chStyle = null;
+    var text = "";
+    var anchorObject;
+    var specialCharXml;
+    var tableIndex;
+    var rubyFlag;
+    var rubyString;
+    var rubyXml;
+    var rubyStringXml;
+    var spotColorName;
+    var rubyColorName;
+    var charCount = paragraph.characters.length;
+    paraXml.@style = paragraph.appliedParagraphStyle.name;
+
+    if(paragraph.tables.length > 0) {
+	for(tableIndex=0; tableIndex<paragraph.tables.length; ++tableIndex) {
+	    contentXml.appendChild(this.analyzeTable(paragraph.tables[tableIndex]));
+	}
+    }
+    else {
+	for(charIndex=0; charIndex<charCount; ++charIndex) {
+	    ch = paragraph.characters[charIndex];
+	    if(ch.appliedCharacterStyle.isValid &&
+	       ch.appliedCharacterStyle.name != chStyle) {
+		// 文字スタイルが変更された
+		if(rubyFlag) {
+		    rubyXml = new XML("<ruby/>");
+		    rubyXml.appendChild(text);
+		    text = "";
+		    rubyStringXml = new XML("<rt/>");
+		    if(rubyColorName) {
+			rubyStringXml.@color = rubyColorName;
+			rubyColorName = null;
+		    }
+		    rubyStringXml.appendChild(rubyString);
+		    rubyXml.appendChild(rubyStringXml);
+		    rubyString = "";
+		    rubyFlag = false;
+		    contentXml.appendChild(rubyXml);
+		}
+		else {
+		    chStyle = ch.appliedCharacterStyle.name;
+		    contentXml.appendChild(text);
+		    text = "";
+		    if(chStyle == CHARSTYLE_NONE) { // 文字スタイル無し
+			contentXml = paraXml;
+		    }
+		    else { // 新規文字スタイル
+			contentXml = new XML("<c/>");
+			contentXml.@style = chStyle;
+			paraXml.appendChild(contentXml);
+		    }
+		}
+	    }
+	    if(ch.allPageItems.length > 0) {
+		// アンカーオブジェクト
+		contentXml.appendChild(text);
+		text = "";
+		anchorObject = this.getChild(ch);
+		if(anchorObject instanceof(TextFrame)) {
+		    contentXml.appendChild(this.analyzeAnchorText(anchorObject));
+		}
+		else if(anchorObject instanceof(Graphic)
+			|| anchorObject instanceof(PDF)) {
+		    contentXml.appendChild(this.analyzeAnchorGraphic(anchorObject));
+		}
+	    }
+	    else {
+		// 文字
+		ch_s = ch.contents.toString();
+		
+		if(spotColorName != ch.fillColor.name) {
+		    if(ch.fillColor instanceof(Color)
+		       && ch.fillColor.model == ColorModel.SPOT) {
+			// 特色
+			contentXml.@color = ch.fillColor.name;
+			spotColorName = ch.fillColor.name;
+		    }
+		    else {
+			spotColorName = null;
+		    }
+		}
+		
+		if(!rubyFlag && ch.rubyFlag) {
+		    // ルビ開始
+		    contentXml.appendChild(text);
+		    text = "";
+		    rubyFlag = true;
+		    rubyString = ch.rubyString;
+		    if(ch.rubyFill instanceof(Color)
+		       && ch.rubyFill.model == ColorModel.SPOT) {
+			rubyColorName = ch.rubyFill.name;
+		    }
+		    else {
+			rubyColorName = null;
+		    }
+		}
+		else if(rubyFlag && !ch.rubyFlag) {
+		    // ルビ終了
+		    rubyXml = new XML("<ruby/>");
+		    rubyXml.appendChild(text);
+		    text = "";
+		    rubyStringXml = new XML("<rt/>");
+		    if(rubyColorName) {
+			rubyStringXml.@color = rubyColorName;
+			rubyColorName = null;
+		    }
+		    rubyStringXml.appendChild(rubyString);
+		    rubyXml.appendChild(rubyStringXml);
+		    rubyString = "";
+		    rubyFlag = false;
+		    contentXml.appendChild(rubyXml);
+		}
+		else if(rubyFlag && ch.rubyFlag && rubyString != ch.rubyString) {
+		    // ルビ切り替え
+		    rubyXml = new XML("<ruby/>");
+		    rubyXml.appendChild(text);
+		    text = "";
+		    rubyStringXml = new XML("<rt/>");
+		    if(rubyColorName) {
+			rubyStringXml.@color = rubyColorName;
+			rubyColorName = null;
+		    }
+		    rubyXml.appendChild(rubyStringXml);
+		    rubyStringXml.appendChild(rubyString);
+		    rubyString = ch.rubyString;
+		    contentXml.appendChild(rubyXml);
+		}
+		
+		if(ch_s.length > 1) {
+		    // 特殊文字
+		    switch(ch_s) {
+		    case "SINGLE_RIGHT_QUOTE":
+			text += "’";
+			break;
+		    case "SINGLE_LEFT_QUOTE":
+			text += "‘";
+			break;
+		    case "DOUBLE_RIGHT_QUOTE":
+			text += "”";
+			break;
+		    case "DOUBLE_LEFT_QUOTE":
+			text += "“";
+			break;
+		    default:
+			contentXml.appendChild(text);
+			text = "";
+			specialCharXml = new XML("<specialChar/>");
+			specialCharXml.@name = ch_s;
+			contentXml.appendChild(specialCharXml);
+		    }
+		}
+		else if(ch_s.match(/\t/)) {
+		    contentXml.appendChild(text);
+		    text = "";
+		    specialCharXml = new XML("<specialChar/>");
+		    specialCharXml.@name = "TAB";
+		    contentXml.appendChild(specialCharXml);
+		}
+		else if(ch_s.charCodeAt(0) < 0x20) {
+		    // 制御文字（スペースに置き換え）
+		    text += " ";
+		}
+		else {
+		    text += ch_s;
+		}
+	    }
+	}
+
+	if(rubyFlag) {
+	    rubyXml = new XML("<ruby/>");
+	    rubyXml.appendChild(text);
+	    text = "";
+	    rubyStringXml = new XML("<rt/>");
+	    rubyStringXml.appendChild(rubyString);
+	    rubyXml.appendChild(rubyStringXml);
+	    rubyString = "";
+	    rubyFlag = false;
+	    contentXml.appendChild(rubyXml);
+	}
+	else {
+	    contentXml.appendChild(text);
+	}
+    }
+
+    return paraXml;
+}
+
+Analyzer.prototype.analyzeTable = function(table) {
+    var tableXml = new XML("<table/>");
+    var rowXml;
+    var cellXml;
+    var rowIndex;
+    var cellIndex;
+    var paraIndex;
+    var row;
+    var cell;
+    var paragraph;
+
+    for(rowIndex=0; rowIndex<table.rows.length; ++rowIndex) {
+	row = table.rows[rowIndex];
+	rowXml = new XML("<tr/>");
+	for(cellIndex=0; cellIndex<row.cells.length; ++cellIndex) {
+	    cell = row.cells[cellIndex];
+	    cellXml = new XML("<td/>");
+	    for(paraIndex=0; paraIndex<cell.paragraphs.length; ++paraIndex) {
+		paragraph = cell.paragraphs[paraIndex];
+		cellXml.appendChild(this.analyzeParagraph(paragraph));
+	    }
+	    rowXml.appendChild(cellXml);
+	}
+
+	tableXml.appendChild(rowXml);
+    }
+
+    return tableXml;
+}
+
+Analyzer.prototype.analyzeAnchorGraphic = function(anchorGraphic) {
+    var xml = new XML("<anchorGraphic/>");
+    xml.@name = anchorGraphic.itemLink.name;
+    xml.@layer = PdfVisibleLayers(anchorGraphic);
+    return xml;
+}
+
+Analyzer.prototype.analyzeAnchorText = function(anchorText) {
+    var xml = new XML("<anchorText/>");
+    var paraIndex;
+    var paragraph;
+    for(paraIndex=0; paraIndex<anchorText.paragraphs.length; ++paraIndex) {
+	paragraph = anchorText.paragraphs[paraIndex];
+	xml.appendChild(this.analyzeParagraph(paragraph));
+    }
+
+    if(xml.length() == 0) {
+	xml = null;
+    }
+    
+    return xml;
 }
 
 var getSaveFile = function() {
@@ -427,16 +495,12 @@ var getSaveFile = function() {
 
 
 var analyzer = new Analyzer();
-XML.prettyPrinting = true;
+XML.prettyPrinting = false;
 var xmldoc = new XML("<files/>");
 var canceled = false;
 
 if(app.documents.length > 0) {
-    analyzer.analyzeDoc(app.activeDocument);
-    var fileEle = new XML("<file/>");
-    fileEle.@name = app.activeDocument.name;
-    fileEle.appendChild(analyzer.xml());
-    xmldoc.appendChild(fileEle);
+    xmldoc.appendChild(analyzer.analyzeDoc(app.activeDocument));
 }
 else {
     var folderName = Folder.selectDialog("フォルダを選択してください。");
@@ -445,12 +509,8 @@ else {
 	var idFiles = selectIdFiles(folder);
 	for(var i=0; i<idFiles.length; ++i) {
 	    var doc = app.open(idFiles[i]);
-	    analyzer.analyzeDoc(doc);
+	    xmldoc.appendChild(analyzer.analyzeDoc(doc));
 	    doc.close(SaveOptions.NO);
-	    var fileEle = new XML("<file/>");
-	    fileEle.@name = idFiles[i];
-	    fileEle.appendChild(analyzer.xml());
-	    xmldoc.appendChild(fileEle);
 	}
     }
     else {
